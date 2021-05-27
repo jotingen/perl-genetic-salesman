@@ -1,0 +1,198 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+
+use File::Basename;
+use lib dirname(__FILE__) . '/../perl/lib/perl5';
+use lib dirname(__FILE__) . '/../perl/extlib/perl5';
+
+use Clone 'clone';
+use List::Util qw(shuffle);
+use Data::Dumper;
+
+use lib dirname(__FILE__);
+use City;
+use Tour;
+
+my $GENERATIONS         = 1000000;
+my $TOURS               = 1000;
+my $MUTATION_PROBABILTY = 10;
+my $CONCAT_PROBABILITY  = 80;
+my $CITIES              = 100;
+
+my $GRID_MAX = 100;
+
+open( my $output_fh, '>', 'result.csv' );
+
+my @cities;
+
+print "Generating Cities\n";
+for ( 0 .. $CITIES ) {
+    my $city = City->new();
+    $city->x( int( rand($GRID_MAX) ) );
+    $city->y( int( rand($GRID_MAX) ) );
+    push @cities, $city;
+}
+
+foreach my $i ( 0 .. $#cities ) {
+    if ( $i == 0 ) {
+        print $output_fh '{';
+    }
+    printf $output_fh '{%d,%d}', $cities[$i]->x(), $cities[$i]->y();
+    if ( $i == $#cities ) {
+        print $output_fh "}\t";
+    }
+    else {
+        print $output_fh ',';
+    }
+}
+printf $output_fh "\n";
+
+print "Generating Distance Table\n";
+my @city_distances;
+for my $i ( 0 .. $CITIES ) {
+    for my $j ( 0 .. $CITIES ) {
+        $city_distances[$i][$j]
+            = sqrt( ( $cities[$i]->x() - $cities[$j]->x() )**2
+                + ( $cities[$i]->y() - $cities[$j]->y() )**2 );
+    }
+}
+
+my @tours = ();
+
+my $first;
+my $best;
+my $best_generation;
+
+#printf $output_fh "%s\t%s\t" . "%d\t" x ( $TOURS + 1 ) . "\n", "Generation",
+#    "Cities", ( 0 .. $TOURS );
+
+print "Running sumulation\n";
+for my $generation ( 0 .. $GENERATIONS ) {
+    if (@tours) {
+        @tours = @{ breed( \@tours ) };
+    }
+    else {
+        for ( 0 .. $TOURS ) {
+            my $tour
+                = Tour->new( $MUTATION_PROBABILTY, $CONCAT_PROBABILITY, [],
+                [] );
+            my @random = shuffle( 0 .. $CITIES );
+            $tour->order( \@random );
+            $tour->fitness( distance($tour) );
+            push @tours, $tour;
+        }
+    }
+
+    @tours = sort { $a->fitness() <=> $b->fitness } @tours;
+
+    my $best_new = 0;
+    if ( !defined $first ) {
+        $first           = $tours[0]->fitness();
+        $best            = $first;
+        $best_generation = $generation;
+        $best_new        = 1;
+    }
+
+    if ( $tours[0]->fitness() < $best ) {
+        $best            = $tours[0]->fitness();
+        $best_generation = $generation;
+        $best_new        = 1;
+    }
+
+    my $average = 0;
+    foreach (@tours) {
+        $average += $_->fitness();
+    }
+    $average = $average / @tours;
+
+    printf $output_fh "%d\t", $generation;
+
+    #foreach my $i ( 0 .. $TOURS ) {
+    #foreach my $i ( 0 .. 10 ) {
+
+    printf $output_fh "%d\t", $best_new;
+
+    printf $output_fh
+        "%d\t%d\t%d\t",
+        $tours[0]->fitness(),
+        $average,
+        $tours[-1]->fitness();
+
+    foreach my $i ( 0 .. 0 ) {
+        print $output_fh '{';
+        my @tour_order = @{ $tours[$i]->order() };
+        foreach my $j ( 0 .. $#tour_order ) {
+            printf $output_fh "%d", $tour_order[$j];
+            if ( $j < $#tour_order ) {
+                print $output_fh ',';
+            }
+        }
+        print $output_fh "}\t";
+    }
+
+    printf $output_fh "\n";
+
+    printf
+        "Gen:%0*d Best(Gen):%*d(%0*d) Best-Avg-Worst:%0*d-%0*d-%0*d\n",
+        log($GENERATIONS) / log(10) + 1, $generation,
+        log($first) / log(10) + 1,       $best,
+        log($GENERATIONS) / log(10) + 1, $best_generation,
+        log($first) / log(10) + 1,       $tours[0]->fitness(),
+        log($first) / log(10) + 1,       $average,
+        log($first) / log(10) + 1,       $tours[-1]->fitness();
+
+    if (   $generation - $best_generation > 100
+        && $generation - $best_generation > $best_generation * 1.1 )
+    {
+        printf "First: %d(%d) Final: %d(%d) Generations: %d\n", $first, 0,
+            $best,
+            $best_generation, $generation;
+        last;
+    }
+}
+
+sub distance {
+    my $tour = shift;
+
+    my $distance = 0;
+    for ( my $i = 0; $i < @{ $tour->order() } - 1; $i++ ) {
+        $distance
+            += $city_distances[ $tour->order()->[ $i - 1 ] ]
+            [ $tour->order()->[$i] ];
+    }
+    return $distance;
+}
+
+sub breed {
+    my @tours = @{ shift @_ };
+
+    @tours = sort { $a->fitness() <=> $b->fitness() } @tours;
+
+    my @parents;
+    push @parents, clone $tours[0];
+    for ( 1 .. $TOURS / 4 ) {
+        push @parents,
+            clone $tours[ int( $TOURS * ( 1 - ( 1 - rand() )**( 1 / 2 ) ) ) ];
+    }
+
+    my @children = ();
+    push @children, clone $tours[0];
+
+    foreach my $i ( 1 .. $TOURS ) {
+        my $a        = int( rand( scalar @parents ) );
+        my $b        = int( rand( scalar @parents ) );
+        my $parent_a = clone $parents[$a];
+        my $parent_b = clone $parents[$b];
+        push @children,
+            Tour->new(
+            $MUTATION_PROBABILTY, $CONCAT_PROBABILITY,
+            $parent_a->order(),   $parent_b->order()
+            );
+        $children[-1]->fitness( distance( $children[-1] ) );
+    }
+
+    return \@children;
+
+}
